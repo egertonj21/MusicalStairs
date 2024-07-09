@@ -3,13 +3,20 @@ import logging
 import mysql.connector
 from mysql.connector import Error
 from sensor_data import fetch_and_play_note_details
-from config import MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+from config import MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, MOTION_CONTROL_TOPIC, DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+import time
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
 # Mute state
 is_muted = False
+
+# Timeout period for ultrasonic sensors to sleep (in seconds)
+TIMEOUT_PERIOD = 300  # 5 minutes
+
+# Dictionary to track the last activity time for each ultrasonic sensor
+last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
 
 def connect_db():
     try:
@@ -91,6 +98,7 @@ def on_message(client, userdata, message):
             distance = float(payload)
             sensor_id = int(topic.split("_")[-1][-1])
             fetch_and_play_note_details(sensor_id, distance, is_muted)
+            last_activity[sensor_id] = time.time()  # Update the last activity time
         elif topic.startswith("alive/distance_sensor"):
             sensor_id = int(topic.split("_")[-1][-1])
             active = payload.lower() == "alive"
@@ -101,11 +109,21 @@ def on_message(client, userdata, message):
                 if payload == "sleep":
                     update_sensor_status(sensor_id, awake=False)
                     logger.info(f"Set sensor_id={sensor_id} to sleep")
+                    client.publish(MOTION_CONTROL_TOPIC, "wake")
                 elif payload == "wake":
                     update_sensor_status(sensor_id, awake=True)
                     logger.info(f"Set sensor_id={sensor_id} to wake")
+                    client.publish(MOTION_CONTROL_TOPIC, "sleep")
     except ValueError as e:
         logger.error(f"Failed to decode message payload: {e}")
+
+def check_for_inactivity(client):
+    current_time = time.time()
+    for sensor_id, last_time in last_activity.items():
+        if current_time - last_time >= TIMEOUT_PERIOD:
+            logger.info(f"Sensor {sensor_id} has been inactive for {TIMEOUT_PERIOD} seconds. Sending sleep command.")
+            client.publish(CONTROL_TOPIC, "sleep")
+            client.publish(MOTION_CONTROL_TOPIC, "motion_wake")
 
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
@@ -113,3 +131,15 @@ def setup_mqtt_client():
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
+
+# Main function to run the MQTT client loop
+def main():
+    client = setup_mqtt_client()
+    while True:
+        client.loop()
+        check_for_inactivity(client)
+        time.sleep(1)  # Sleep for a short period to avoid high CPU usage
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.DEBUG)
+    main()
