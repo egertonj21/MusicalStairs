@@ -43,6 +43,16 @@ def sensor_exists(connection, sensor_id):
         logger.error(f"Error checking if sensor exists: {e}")
         return False
 
+def led_strip_exists(connection, led_strip_name):
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SELECT 1 FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
+        result = cursor.fetchone()
+        return result is not None
+    except Error as e:
+        logger.error(f"Error checking if LED strip exists: {e}")
+        return False
+
 def update_sensor_status(sensor_id, active=None, awake=None):
     connection = connect_db()
     if connection is None:
@@ -67,6 +77,64 @@ def update_sensor_status(sensor_id, active=None, awake=None):
         if connection.is_connected():
             cursor.close()
             connection.close()
+
+def get_default_colour_id():
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SELECT colour_ID FROM colour LIMIT 1")
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            logger.error("No default colour_ID found")
+            return None
+    except Error as e:
+        logger.error(f"Error fetching default colour_ID: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=None):
+    connection = connect_db()
+    if connection is None:
+        return
+
+    try:
+        cursor = connection.cursor()
+        if not led_strip_exists(connection, led_strip_name):
+            if colour_id is None:
+                colour_id = get_default_colour_id()
+                if colour_id is None:
+                    logger.error("Cannot insert LED strip without a valid colour_ID")
+                    return
+            cursor.execute("INSERT INTO LED_strip (LED_strip_name, LED_alive, LED_active, colour_ID) VALUES (%s, %s, %s, %s)",
+                           (led_strip_name, alive if alive is not None else 0, active if active is not None else 0, colour_id))
+            logger.info(f"Inserted new LED strip: LED_strip_name={led_strip_name}, active={active}, alive={alive}, colour_id={colour_id}")
+        else:
+            if colour_id is None:
+                cursor.execute("SELECT colour_ID FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
+                colour_id = cursor.fetchone()[0]
+            if active is not None:
+                cursor.execute("UPDATE LED_strip SET LED_active = %s WHERE LED_strip_name = %s", (active, led_strip_name))
+            if alive is not None:
+                cursor.execute("UPDATE LED_strip SET LED_alive = %s WHERE LED_strip_name = %s", (alive, led_strip_name))
+            cursor.execute("UPDATE LED_strip SET colour_ID = %s WHERE LED_strip_name = %s", (colour_id, led_strip_name))
+            logger.info(f"Updated LED strip status: LED_strip_name={led_strip_name}, active={active}, alive={alive}, colour_id={colour_id}")
+        connection.commit()
+    except Error as e:
+        logger.error(f"Error updating LED strip status: {e}")
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -104,6 +172,11 @@ def on_message(client, userdata, message):
             active = payload.lower() == "alive"
             logger.debug(f"Alive message for sensor_id={sensor_id}, active={active}")
             update_sensor_status(sensor_id, active=active)
+        elif topic.startswith("alive/ledstrip"):
+            led_strip_name = topic.split("/")[-1]
+            active = payload.lower() == "alive"
+            logger.debug(f"Alive message for LED strip: led_strip_name={led_strip_name}, active={active}")
+            update_led_strip_status(led_strip_name, active=active, alive=active)
         elif topic == CONTROL_TOPIC:
             for sensor_id in range(1, 5):  # Assuming 4 sensors
                 if payload == "sleep":
