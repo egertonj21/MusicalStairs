@@ -3,7 +3,8 @@ import logging
 import mysql.connector
 from mysql.connector import Error
 from sensor_data import fetch_and_play_note_details
-from config import MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, MOTION_CONTROL_TOPIC, DB_HOST, DB_USER, DB_PASSWORD, DB_NAME
+from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
+                    MOTION_CONTROL_TOPIC, DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)
 import time
 
 # Configure logging
@@ -11,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Mute state
 is_muted = False
+NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
 TIMEOUT_PERIOD = 300  # 5 minutes
@@ -134,6 +136,125 @@ def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=N
             cursor.close()
             connection.close()
 
+def fetch_led_strip_id(led_strip_name):
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute("SELECT LED_strip_ID FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            logger.error(f"No LED_strip_ID found for LED_strip_name={led_strip_name}")
+            return None
+    except Error as e:
+        logger.error(f"Error fetching LED_strip_ID: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+
+def fetch_colour_id(LED_strip_id, range_id):
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        query = """
+            SELECT sl.colour_ID
+            FROM sensor_light sl
+            INNER JOIN LED_strip ls ON sl.LED_strip_ID = ls.LED_strip_ID
+            WHERE sl.LED_strip_ID = %s AND sl.range_ID = %s
+        """
+        cursor.execute(query, (LED_strip_id, range_id))
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            logger.error(f"No colour_ID found for LED_strip_ID={LED_strip_id}, range_ID={range_id}")
+            return None
+    except Error as e:
+        logger.error(f"Error fetching colour_ID: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+            
+def fetch_colour_rgb(LED_strip_id, range_id):
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        query = """
+            SELECT c.red, c.green, c.blue
+            FROM sensor_light sl
+            INNER JOIN LED_strip ls ON sl.LED_strip_ID = ls.LED_strip_ID
+            INNER JOIN colour c ON sl.colour_ID = c.colour_ID
+            WHERE sl.LED_strip_ID = %s AND sl.range_ID = %s
+        """
+        cursor.execute(query, (LED_strip_id, range_id))
+        result = cursor.fetchone()
+        if result:
+            return result  # returns (red, green, blue)
+        else:
+            logger.error(f"No colour found for LED_strip_ID={LED_strip_id}, range_ID={range_id}")
+            return None
+    except Error as e:
+        logger.error(f"Error fetching colour: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+def fetch_sensor_ranges():
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        query = "SELECT range_ID, lower_limit, upper_limit FROM sensor_range"
+        cursor.execute(query)
+        results = cursor.fetchall()
+        sensor_ranges = {row[0]: (row[1], row[2]) for row in results}
+        return sensor_ranges
+    except Error as e:
+        logger.error(f"Error fetching sensor ranges: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
+def fetch_light_duration():
+    connection = connect_db()
+    if connection is None:
+        return None
+
+    try:
+        cursor = connection.cursor()
+        query = "SELECT duration FROM light_duration WHERE light_duration_ID = 1"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            logger.error("No duration found in light_duration table")
+            return None
+    except Error as e:
+        logger.error(f"Error fetching light duration: {e}")
+        return None
+    finally:
+        if connection.is_connected():
+            cursor.close()
+            connection.close()
 
 
 def on_connect(client, userdata, flags, rc):
@@ -162,21 +283,81 @@ def on_message(client, userdata, message):
     try:
         payload = message.payload.decode()
         logger.debug(f"Decoded payload: {payload}")
+        
         if topic.startswith("ultrasonic/distance_sensor"):
             distance = float(payload)
-            sensor_id = int(topic.split("_")[-1][-1])
+            sensor_id = int(topic.split("_")[-1][-1])  # Ensure the extraction is correct
             fetch_and_play_note_details(sensor_id, distance, is_muted)
             last_activity[sensor_id] = time.time()  # Update the last activity time
+            
+            # Fetch sensor ranges
+            sensor_ranges = fetch_sensor_ranges()
+            if not sensor_ranges:
+                logger.error("Failed to fetch sensor ranges")
+                return
+
+            # Determine range_id based on distance
+            range_id = None
+            for rid, (lower, upper) in sensor_ranges.items():
+                if lower <= distance <= upper:
+                    range_id = rid
+                    break
+
+            if range_id is None:
+                logger.error(f"No matching range found for distance {distance}")
+                return
+
+            # Determine LED range based on range_id
+            if range_id == 1:  # close
+                start_led = 0
+                end_led = 9
+            elif range_id == 2:  # mid
+                start_led = 10
+                end_led = 19
+            elif range_id == 3:  # far
+                start_led = 20
+                end_led = NUM_LEDS - 1
+            else:
+                logger.error(f"Unknown range_id {range_id} for distance {distance}")
+                return
+
+            # Fetch the light duration
+            light_duration = fetch_light_duration()
+            if not light_duration:
+                logger.error("Failed to fetch light duration")
+                return
+
+            # Construct LED strip name from sensor name
+            sensor_name = topic.split("/")[-1]  # Extract the sensor name from the topic
+            sensor_number = ''.join(filter(str.isdigit, sensor_name))  # Extract the number from the sensor name
+            led_strip_name = f"ledstrip{sensor_number}"  # Construct the LED strip name
+            
+            # Fetch the LED strip ID using the constructed name
+            led_strip_id = fetch_led_strip_id(led_strip_name)
+            if led_strip_id:
+                colour_rgb = fetch_colour_rgb(led_strip_id, range_id)
+                if colour_rgb:
+                    rgb_color = f"{colour_rgb[0]},{colour_rgb[1]},{colour_rgb[2]}"  # Format RGB string
+                    message = f"{start_led}-{end_led}&{rgb_color}&{light_duration}"  # Example: "0-9&255,0,0&5" for 5 seconds
+                    client.publish(f"trigger/{led_strip_name}", message)
+                    logger.info(f"Published '{message}' to trigger/{led_strip_name}")
+                else:
+                    logger.error(f"No colour found for LED_strip_ID={led_strip_id} and range_ID={range_id}")
+            else:
+                logger.error(f"No LED_strip_ID found for LED_strip_name={led_strip_name}")
+
         elif topic.startswith("alive/distance_sensor"):
             sensor_id = int(topic.split("_")[-1][-1])
             active = payload.lower() == "alive"
             logger.debug(f"Alive message for sensor_id={sensor_id}, active={active}")
             update_sensor_status(sensor_id, active=active)
+            
         elif topic.startswith("alive/ledstrip"):
             led_strip_name = topic.split("/")[-1]
             active = payload.lower() == "alive"
             logger.debug(f"Alive message for LED strip: led_strip_name={led_strip_name}, active={active}")
             update_led_strip_status(led_strip_name, active=active, alive=active)
+            
         elif topic == CONTROL_TOPIC:
             for sensor_id in range(1, 5):  # Assuming 4 sensors
                 if payload == "sleep":
@@ -187,9 +368,17 @@ def on_message(client, userdata, message):
                     update_sensor_status(sensor_id, awake=True)
                     logger.info(f"Set sensor_id={sensor_id} to wake")
                     client.publish(MOTION_CONTROL_TOPIC, "sleep")
+                    
     except ValueError as e:
         logger.error(f"Failed to decode message payload: {e}")
+    except Exception as e:
+        logger.error(f"Unexpected error in on_message: {e}")
 
+
+
+
+
+        
 def check_for_inactivity(client):
     current_time = time.time()
     for sensor_id, last_time in last_activity.items():
@@ -197,22 +386,21 @@ def check_for_inactivity(client):
             logger.info(f"Sensor {sensor_id} has been inactive for {TIMEOUT_PERIOD} seconds. Sending sleep command.")
             client.publish(CONTROL_TOPIC, "sleep")
             client.publish(MOTION_CONTROL_TOPIC, "motion_wake")
-
+            
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
-
-# Main function to run the MQTT client loop
+    
 def main():
     client = setup_mqtt_client()
     while True:
         client.loop()
         check_for_inactivity(client)
-        time.sleep(1)  # Sleep for a short period to avoid high CPU usage
-
+        time.sleep(1)
+        
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
     main()
