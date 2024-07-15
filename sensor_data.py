@@ -1,9 +1,9 @@
 import logging
-import requests
 import json
 import time
 import threading
-from config import NOTE_DETAILS_URL, JS_SERVER_URL
+import websocket
+from config import WS_SERVER_URL
 from sound import last_played, COOLDOWN_PERIOD, play_sound
 
 # Configure logging
@@ -11,19 +11,26 @@ logger = logging.getLogger(__name__)
 
 def log_sensor_data(sensor_id, distance):
     try:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
         payload = {
-            "sensor_ID": sensor_id,
-            "distance": distance
+            "action": "logSensorData",
+            "payload": {
+                "sensor_ID": sensor_id,
+                "distance": distance
+            }
         }
-        headers = {'Content-Type': 'application/json'}
-        logger.debug(f"Sending payload to log sensor data: {payload}")
-        response = requests.post(f"{JS_SERVER_URL}/sensors/log", data=json.dumps(payload), headers=headers)
-        if response.status_code == 200:
+        ws.send(json.dumps(payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for logSensorData: {response_data}")
+        if response_data.get("action") == "logSensorData" and "error" not in response_data:
             logger.info(f"Sensor data logged successfully for sensor {sensor_id}: {distance}")
         else:
-            logger.error(f"Failed to log sensor data for sensor {sensor_id}: {response.text}")
-    except requests.ConnectionError as ce:
-        logger.error(f"Connection error: {ce}")
+            logger.error(f"Failed to log sensor data for sensor {sensor_id}: {response_data.get('error')}")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
     except Exception as e:
         logger.error(f"Failed to send data to server: {e}")
 
@@ -46,19 +53,23 @@ def fetch_and_play_note_details(sensor_id, distance, is_muted):
             return
 
         logger.debug(f"Fetching note details for sensor_id: {sensor_id}, range_id: {range_id}")
-        response = requests.get(f"{NOTE_DETAILS_URL}/{sensor_id}/{range_id}")
-        response.raise_for_status()
-        logger.debug(f"Server response: {response.text}")
-        note_details = response.json()
-        logger.debug(f"Note details received: {note_details}")
-        if isinstance(note_details, list):
-            if note_details:
-                note_details = note_details[0]
-            else:
-                note_details = {}
-        if note_details:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
+        payload = {
+            "action": "getNoteDetails",
+            "payload": {
+                "sensor_ID": sensor_id,
+                "range_ID": range_id
+            }
+        }
+        ws.send(json.dumps(payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for getNoteDetails: {response_data}")
+        if response_data.get("action") == "getNoteDetails" and "data" in response_data:
+            note_details = response_data["data"]
+            logger.debug(f"Note details received: {note_details}")
             note_id = note_details.get("note_ID")
-            logger.debug(f"Fetched note ID: {note_id}")
 
             # Log sensor data irrespective of mute state
             log_sensor_data(sensor_id, distance)
@@ -74,9 +85,11 @@ def fetch_and_play_note_details(sensor_id, distance, is_muted):
                 logger.info(f"Skipping note {note_id} for sensor {sensor_id} due to cooldown or mute.")
         else:
             logger.warning(f"No note details found for sensor {sensor_id} at range {range_id}.")
-    except requests.RequestException as e:
-        logger.error(f"Failed to fetch note details: {e}")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e} - Response content: {response.content}")
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
     except Exception as e:
         logger.error(f"Unexpected error in fetch_and_play_note_details: {e}")
+

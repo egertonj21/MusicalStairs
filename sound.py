@@ -1,7 +1,8 @@
 import pygame
 import logging
-from config import NOTES_URL, RANGES_URL
-from utils import retry_request
+import websocket
+import json
+from config import WS_SERVER_URL
 
 # Initialize pygame mixer for playing sound
 pygame.mixer.init()
@@ -19,25 +20,46 @@ is_muted = False  # Mute state
 logger = logging.getLogger(__name__)
 
 def load_sounds(retries=5, delay=2):
-    response = retry_request(NOTES_URL, retries=retries, delay=delay)
-    if response:
-        notes = response.json()
+    ws = websocket.WebSocket()
+    ws.connect(WS_SERVER_URL)
+    payload = {
+        "action": "getNotes"
+    }
+    ws.send(json.dumps(payload))
+    response = ws.recv()
+    response_data = json.loads(response)
+    logger.debug(f"Received response for getNotes: {response_data}")
+    if response_data and response_data.get("action") == "getNotes":
+        notes = response_data.get("data", [])
         for note in notes:
-            sounds[note["note_ID"]] = pygame.mixer.Sound(note["note_location"])
+            if isinstance(note, dict):
+                sounds[note["note_ID"]] = pygame.mixer.Sound(note["note_location"])
+            else:
+                logger.error(f"Unexpected note format: {note}")
         logger.info("Sounds loaded successfully")
         logger.debug(f"Loaded sounds: {sounds}")
     else:
-        logger.critical("All retries to load sounds have failed.")
+        logger.critical("Failed to load sounds.")
+    ws.close()
 
 def load_ranges(retries=5, delay=2):
     global ranges
-    response = retry_request(RANGES_URL, retries=retries, delay=delay)
-    if response:
-        ranges = response.json()
+    ws = websocket.WebSocket()
+    ws.connect(WS_SERVER_URL)
+    payload = {
+        "action": "getRanges"
+    }
+    ws.send(json.dumps(payload))
+    response = ws.recv()
+    response_data = json.loads(response)
+    logger.debug(f"Received response for getRanges: {response_data}")
+    if response_data and response_data.get("action") == "getRanges":
+        ranges = response_data.get("data", [])
         logging.info("Ranges loaded successfully")
         logging.debug(f"Loaded ranges: {ranges}")
     else:
-        logging.critical("All retries to load ranges have failed.")
+        logging.critical("Failed to load ranges.")
+    ws.close()
 
 def play_sound(note_ID):
     if is_muted:

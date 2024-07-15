@@ -1,20 +1,18 @@
-import requests
 import time
 import logging
 
 # Configure logging
 logger = logging.getLogger(__name__)
 
-def retry_request(url, retries=5, delay=2, method='GET', **kwargs):
+def retry_request(ws, payload, retries=5, delay=2):
     """
-    A utility function to perform HTTP requests with retries.
+    A utility function to perform WebSocket requests with retries.
 
     Args:
-        url (str): The URL to request.
+        ws (WebSocket): The WebSocket instance.
+        payload (dict): The payload to send.
         retries (int): The number of retry attempts.
         delay (int): Delay between retries in seconds.
-        method (str): HTTP method ('GET', 'POST', etc.).
-        **kwargs: Additional arguments to pass to the request method.
 
     Returns:
         Response: The response object if the request is successful.
@@ -22,13 +20,13 @@ def retry_request(url, retries=5, delay=2, method='GET', **kwargs):
     """
     for attempt in range(retries):
         try:
-            response = requests.request(method, url, **kwargs)
-            response.raise_for_status()
-            return response
-        except requests.RequestException as e:
+            ws.send(json.dumps(payload))
+            response = ws.recv()
+            return json.loads(response)
+        except Exception as e:
             logger.error(f"Request failed (attempt {attempt + 1}/{retries}): {e}")
             time.sleep(delay)
-    logger.critical(f"All retries failed for URL: {url}")
+    logger.critical(f"All retries failed for payload: {payload}")
     return None
 
 def log_response(response):
