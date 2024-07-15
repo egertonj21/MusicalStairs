@@ -1,11 +1,11 @@
 import paho.mqtt.client as mqtt
 import logging
-import mysql.connector
-from mysql.connector import Error
+import time
+import requests
 from sensor_data import fetch_and_play_note_details
 from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
-                    MOTION_CONTROL_TOPIC, DB_HOST, DB_USER, DB_PASSWORD, DB_NAME)
-import time
+                    MOTION_CONTROL_TOPIC, JS_SERVER_URL)
+from utils import retry_request
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -20,242 +20,71 @@ TIMEOUT_PERIOD = 300  # 5 minutes
 # Dictionary to track the last activity time for each ultrasonic sensor
 last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
 
-def connect_db():
-    try:
-        connection = mysql.connector.connect(
-            host=DB_HOST,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        if connection.is_connected():
-            logger.info("Connected to the database")
-        return connection
-    except Error as e:
-        logger.error(f"Error connecting to the database: {e}")
-        return None
-
-def sensor_exists(connection, sensor_id):
-    try:
-        cursor = connection.cursor()
-        cursor.execute("SELECT 1 FROM alive WHERE sensor_ID = %s", (sensor_id,))
-        result = cursor.fetchone()
-        return result is not None
-    except Error as e:
-        logger.error(f"Error checking if sensor exists: {e}")
-        return False
-
-def led_strip_exists(connection, led_strip_name):
-    try:
-        cursor = connection.cursor()
-        cursor.execute("SELECT 1 FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
-        result = cursor.fetchone()
-        return result is not None
-    except Error as e:
-        logger.error(f"Error checking if LED strip exists: {e}")
-        return False
-
 def update_sensor_status(sensor_id, active=None, awake=None):
-    connection = connect_db()
-    if connection is None:
-        return
-
-    try:
-        cursor = connection.cursor()
-        if not sensor_exists(connection, sensor_id):
-            cursor.execute("INSERT INTO alive (sensor_ID, active, awake) VALUES (%s, %s, %s)",
-                           (sensor_id, active if active is not None else 0, awake if awake is not None else 0))
-            logger.info(f"Inserted new sensor: sensor_ID={sensor_id}, active={active}, awake={awake}")
-        else:
-            if active is not None:
-                cursor.execute("UPDATE alive SET active = %s WHERE sensor_ID = %s", (active, sensor_id))
-            if awake is not None:
-                cursor.execute("UPDATE alive SET awake = %s WHERE sensor_ID = %s", (awake, sensor_id))
-            logger.info(f"Updated sensor status: sensor_ID={sensor_id}, active={active}, awake={awake}")
-        connection.commit()
-    except Error as e:
-        logger.error(f"Error updating sensor status: {e}")
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-
-def get_default_colour_id():
-    connection = connect_db()
-    if connection is None:
-        return None
-
-    try:
-        cursor = connection.cursor()
-        cursor.execute("SELECT colour_ID FROM colour LIMIT 1")
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        else:
-            logger.error("No default colour_ID found")
-            return None
-    except Error as e:
-        logger.error(f"Error fetching default colour_ID: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
+    payload = {
+        "sensor_id": sensor_id,
+        "active": active,
+        "awake": awake
+    }
+    url = f"{JS_SERVER_URL}/others/sensor-status"
+    response = retry_request(url, method='POST', json=payload)
+    if response:
+        logger.info(f"Updated sensor status: {response.json()}")
 
 def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=None):
-    connection = connect_db()
-    if connection is None:
-        return
-
-    try:
-        cursor = connection.cursor()
-        if not led_strip_exists(connection, led_strip_name):
-            if colour_id is None:
-                colour_id = get_default_colour_id()
-                if colour_id is None:
-                    logger.error("Cannot insert LED strip without a valid colour_ID")
-                    return
-            cursor.execute("INSERT INTO LED_strip (LED_strip_name, LED_alive, LED_active, colour_ID) VALUES (%s, %s, %s, %s)",
-                           (led_strip_name, alive if alive is not None else 0, active if active is not None else 0, colour_id))
-            logger.info(f"Inserted new LED strip: LED_strip_name={led_strip_name}, active={active}, alive={alive}, colour_id={colour_id}")
-        else:
-            if colour_id is None:
-                cursor.execute("SELECT colour_ID FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
-                colour_id = cursor.fetchone()[0]
-            if active is not None:
-                cursor.execute("UPDATE LED_strip SET LED_active = %s WHERE LED_strip_name = %s", (active, led_strip_name))
-            if alive is not None:
-                cursor.execute("UPDATE LED_strip SET LED_alive = %s WHERE LED_strip_name = %s", (alive, led_strip_name))
-            cursor.execute("UPDATE LED_strip SET colour_ID = %s WHERE LED_strip_name = %s", (colour_id, led_strip_name))
-            logger.info(f"Updated LED strip status: LED_strip_name={led_strip_name}, active={active}, alive={alive}, colour_id={colour_id}")
-        connection.commit()
-    except Error as e:
-        logger.error(f"Error updating LED strip status: {e}")
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
+    payload = {
+        "led_strip_name": led_strip_name,
+        "active": active,
+        "alive": alive,
+        "colour_id": colour_id
+    }
+    url = f"{JS_SERVER_URL}/ledstrip/update_status"
+    response = retry_request(url, method='PUT', json=payload)
+    if response:
+        logger.info(f"Updated LED strip status: {response.json()}")
 
 def fetch_led_strip_id(led_strip_name):
-    connection = connect_db()
-    if connection is None:
-        return None
+    url = f"{JS_SERVER_URL}/ledstrip/id/{led_strip_name}"
+    response = retry_request(url)
+    if response:
+        result = response.json()
+        logger.debug(f"LED strip ID response: {result}")
 
-    try:
-        cursor = connection.cursor()
-        cursor.execute("SELECT LED_strip_ID FROM LED_strip WHERE LED_strip_name = %s", (led_strip_name,))
-        result = cursor.fetchone()
-        if result:
+        if isinstance(result, list) and len(result) > 0:
+            return result[0].get('led_strip_id')
+        elif isinstance(result, dict):
+            return result.get('led_strip_id')
+    return None
+
+def fetch_colour_rgb(led_strip_id, range_id):
+    url = f"{JS_SERVER_URL}/ledstrip/colour_rgb/{led_strip_id}/{range_id}"
+    response = retry_request(url)
+    if response:
+        result = response.json()
+        logger.debug(f"Colour RGB response: {result}")
+
+        if isinstance(result, list) and len(result) > 0:
             return result[0]
-        else:
-            logger.error(f"No LED_strip_ID found for LED_strip_name={led_strip_name}")
-            return None
-    except Error as e:
-        logger.error(f"Error fetching LED_strip_ID: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
+        elif isinstance(result, dict):
+            return result
+    return None
 
-def fetch_colour_id(LED_strip_id, range_id):
-    connection = connect_db()
-    if connection is None:
-        return None
 
-    try:
-        cursor = connection.cursor()
-        query = """
-            SELECT sl.colour_ID
-            FROM sensor_light sl
-            INNER JOIN LED_strip ls ON sl.LED_strip_ID = ls.LED_strip_ID
-            WHERE sl.LED_strip_ID = %s AND sl.range_ID = %s
-        """
-        cursor.execute(query, (LED_strip_id, range_id))
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        else:
-            logger.error(f"No colour_ID found for LED_strip_ID={LED_strip_id}, range_ID={range_id}")
-            return None
-    except Error as e:
-        logger.error(f"Error fetching colour_ID: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-            
-def fetch_colour_rgb(LED_strip_id, range_id):
-    connection = connect_db()
-    if connection is None:
-        return None
 
-    try:
-        cursor = connection.cursor()
-        query = """
-            SELECT c.red, c.green, c.blue
-            FROM sensor_light sl
-            INNER JOIN LED_strip ls ON sl.LED_strip_ID = ls.LED_strip_ID
-            INNER JOIN colour c ON sl.colour_ID = c.colour_ID
-            WHERE sl.LED_strip_ID = %s AND sl.range_ID = %s
-        """
-        cursor.execute(query, (LED_strip_id, range_id))
-        result = cursor.fetchone()
-        if result:
-            return result  # returns (red, green, blue)
-        else:
-            logger.error(f"No colour found for LED_strip_ID={LED_strip_id}, range_ID={range_id}")
-            return None
-    except Error as e:
-        logger.error(f"Error fetching colour: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-def fetch_sensor_ranges():
-    connection = connect_db()
-    if connection is None:
-        return None
 
-    try:
-        cursor = connection.cursor()
-        query = "SELECT range_ID, lower_limit, upper_limit FROM sensor_range"
-        cursor.execute(query)
-        results = cursor.fetchall()
-        sensor_ranges = {row[0]: (row[1], row[2]) for row in results}
-        return sensor_ranges
-    except Error as e:
-        logger.error(f"Error fetching sensor ranges: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
 def fetch_light_duration():
-    connection = connect_db()
-    if connection is None:
-        return None
+    url = f"{JS_SERVER_URL}/sensor/light_duration"
+    response = retry_request(url)
+    if response:
+        return response.json().get('duration')
+    return None
 
-    try:
-        cursor = connection.cursor()
-        query = "SELECT duration FROM light_duration WHERE light_duration_ID = 1"
-        cursor.execute(query)
-        result = cursor.fetchone()
-        if result:
-            return result[0]
-        else:
-            logger.error("No duration found in light_duration table")
-            return None
-    except Error as e:
-        logger.error(f"Error fetching light duration: {e}")
-        return None
-    finally:
-        if connection.is_connected():
-            cursor.close()
-            connection.close()
-
+def fetch_sensor_ranges():
+    url = f"{JS_SERVER_URL}/others/ranges"
+    response = retry_request(url)
+    if response:
+        return response.json().get('sensor_ranges')
+    return None
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -286,6 +115,8 @@ def on_message(client, userdata, message):
         
         if topic.startswith("ultrasonic/distance_sensor"):
             distance = float(payload)
+            if distance == 0:
+                return  # Ignore erroneous reading of 0
             sensor_id = int(topic.split("_")[-1][-1])  # Ensure the extraction is correct
             fetch_and_play_note_details(sensor_id, distance, is_muted)
             last_activity[sensor_id] = time.time()  # Update the last activity time
@@ -374,11 +205,6 @@ def on_message(client, userdata, message):
     except Exception as e:
         logger.error(f"Unexpected error in on_message: {e}")
 
-
-
-
-
-        
 def check_for_inactivity(client):
     current_time = time.time()
     for sensor_id, last_time in last_activity.items():
@@ -393,14 +219,3 @@ def setup_mqtt_client():
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
-    
-def main():
-    client = setup_mqtt_client()
-    while True:
-        client.loop()
-        check_for_inactivity(client)
-        time.sleep(1)
-        
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG)
-    main()

@@ -17,7 +17,7 @@ def log_sensor_data(sensor_id, distance):
             "distance": distance
         }
         headers = {'Content-Type': 'application/json'}
-        response = requests.post(JS_SERVER_URL, data=json.dumps(payload), headers=headers)
+        response = requests.post(f"{JS_SERVER_URL}/sensor/log", data=json.dumps(payload), headers=headers)
         if response.status_code == 200:
             logger.info(f"Sensor data logged successfully for sensor {sensor_id}: {distance}")
         else:
@@ -28,17 +28,25 @@ def log_sensor_data(sensor_id, distance):
         logger.error(f"Failed to send data to server: {e}")
 
 def fetch_and_play_note_details(sensor_id, distance, is_muted):
-    # Fetch note details from the server based on sensor ID and range ID
     try:
         range_id = determine_range_id(distance)
         logger.debug(f"Fetching note details for sensor_id: {sensor_id}, range_id: {range_id}")
         response = requests.get(f"{NOTE_DETAILS_URL}/{sensor_id}/{range_id}")
         response.raise_for_status()
         logger.debug(f"Server response: {response.text}")
-        if response.text.strip():
+
+        if response.text.strip():  # Check if response is not empty
             note_details = response.json()
-            if note_details:
+            logger.debug(f"Note details received: {note_details}")
+
+            if isinstance(note_details, list) and len(note_details) > 0:
+                note_id = note_details[0].get("note_ID")
+            elif isinstance(note_details, dict):
                 note_id = note_details.get("note_ID")
+            else:
+                note_id = None
+
+            if note_id:
                 logger.debug(f"Fetched note ID: {note_id}")
 
                 # Log sensor data irrespective of mute state
@@ -54,13 +62,15 @@ def fetch_and_play_note_details(sensor_id, distance, is_muted):
                 else:
                     logger.info(f"Skipping note {note_id} for sensor {sensor_id} due to cooldown or mute.")
             else:
-                logger.warning(f"No note details found for sensor {sensor_id} at range {range_id}.")
+                logger.warning(f"No valid note ID found for sensor {sensor_id} at range {range_id}.")
         else:
-            logger.warning(f"Empty response from server for sensor_id: {sensor_id}, range_id: {range_id}")
+            logger.warning(f"Empty response from server for sensor_id: {sensor_id}, range_id: {range_id}.")
     except requests.RequestException as e:
         logger.error(f"Failed to fetch note details: {e}")
     except json.JSONDecodeError as e:
         logger.error(f"JSON decode error: {e} - Response content: {response.content}")
+
+
 
 def determine_range_id(distance):
     from sound import ranges
