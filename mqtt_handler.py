@@ -39,9 +39,14 @@ def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=N
         "colour_id": colour_id
     }
     url = f"{JS_SERVER_URL}/ledstrip/update_status"
+    
+    # Log the payload and URL
+    logger.debug(f"Updating LED strip status with payload: {payload} to URL: {url}")
+    
     response = retry_request(url, method='PUT', json=payload)
     if response:
         logger.info(f"Updated LED strip status: {response.json()}")
+
 
 def fetch_led_strip_id(led_strip_name):
     url = f"{JS_SERVER_URL}/ledstrip/id/{led_strip_name}"

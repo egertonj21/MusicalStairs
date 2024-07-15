@@ -34,10 +34,10 @@ def load_ranges(retries=5, delay=2):
     response = retry_request(RANGES_URL, retries=retries, delay=delay)
     if response:
         ranges = response.json()
-        logger.info("Ranges loaded successfully")
-        logger.debug(f"Loaded ranges: {ranges}")
+        logging.info("Ranges loaded successfully")
+        logging.debug(f"Loaded ranges: {ranges}")
     else:
-        logger.critical("All retries to load ranges have failed.")
+        logging.critical("All retries to load ranges have failed.")
 
 def play_sound(note_ID):
     if is_muted:
