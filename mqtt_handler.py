@@ -3,6 +3,7 @@ import logging
 import time
 import threading
 import websocket
+import json
 from sensor_data import fetch_and_play_note_details
 from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
                     MOTION_CONTROL_TOPIC, WS_SERVER_URL)
@@ -17,33 +18,34 @@ is_muted = False
 NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
-TIMEOUT_PERIOD = 300  # 5 minutes
+TIMEOUT_PERIOD = 20  # 5 minutes
 ALIVE_CHECK_PERIOD = 60  # Period to check for alive messages (in seconds)
 
 # Dictionary to track the last activity time for each ultrasonic sensor
 last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
 
-def update_sensor_status(sensor_id, active=None, awake=None):
+# Dictionary to track the last activity time for each LED strip
+led_strip_last_activity = {f"ledstrip{i}": time.time() for i in range(1, 3)}  # Update based on actual LED strips
+
+def update_sensor_status(sensors_on):
     payload = {
-        "sensor_id": sensor_id,
-        "active": active,
-        "awake": awake
+        "sensors_on": sensors_on
     }
     try:
         ws = websocket.WebSocket()
         ws.connect(WS_SERVER_URL)
         ws_payload = {
-            "route": "updateSensorAlive",
+            "action": "updateSensorAlive",
             "payload": payload
         }
         ws.send(json.dumps(ws_payload))
         response = ws.recv()
         response_data = json.loads(response)
         logger.debug(f"Received response for updateSensorAlive: {response_data}")
-        if response_data.get("route") == "updateSensorAlive" and "error" not in response_data:
-            logger.info(f"Sensor status updated successfully for sensor {sensor_id}: {payload}")
+        if response_data.get("action") == "update_sensor_status" and "error" not in response_data:
+            logger.info(f"Sensor status updated successfully: {payload}")
         else:
-            logger.error(f"Failed to update sensor status for sensor {sensor_id}: {response_data.get('error')}")
+            logger.error(f"Failed to update sensor status: {response_data.get('error')}")
         ws.close()
     except websocket.WebSocketException as e:
         logger.error(f"WebSocket error: {e}")
@@ -61,14 +63,14 @@ def update_led_strip_status(led_strip_name, alive=None):
         ws = websocket.WebSocket()
         ws.connect(WS_SERVER_URL)
         ws_payload = {
-            "route": "updateLEDStripStatus",
+            "action": "updateLEDStripStatus",
             "payload": payload
         }
         ws.send(json.dumps(ws_payload))
         response = ws.recv()
         response_data = json.loads(response)
         logger.debug(f"Received response for updateLEDStripStatus: {response_data}")
-        if response_data.get("route") == "updateLEDStripStatus" and "error" not in response_data:
+        if response_data.get("action") == "updateLEDStripStatus" and "error" not in response_data:
             logger.info(f"LED strip status updated successfully for {led_strip_name}: {payload}")
         else:
             logger.error(f"Failed to update LED strip status for {led_strip_name}: {response_data.get('error')}")
@@ -79,7 +81,6 @@ def update_led_strip_status(led_strip_name, alive=None):
         logger.error(f"JSON decode error: {e} - Response content: {response}")
     except Exception as e:
         logger.error(f"Failed to send data to server: {e}")
-
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -120,25 +121,21 @@ def on_message(client, userdata, message):
             sensor_id = int(topic.split("_")[-1][-1])
             active = payload.lower() == "alive"
             logger.debug(f"Alive message for sensor_id={sensor_id}, active={active}")
-            update_sensor_status(sensor_id, active=active)
+            last_activity[sensor_id] = time.time()  # Update the last alive time
+            update_sensor_status(active)
             
         elif topic.startswith("alive/ledstrip"):
             led_strip_name = topic.split("/")[-1]
-            active = payload.lower() == "alive"
-            logger.debug(f"Alive message for LED strip: led_strip_name={led_strip_name}, active={active}")
+            alive = payload.lower() == "alive"
+            logger.debug(f"Alive message for LED strip: led_strip_name={led_strip_name}, alive={alive}")
             led_strip_last_activity[led_strip_name] = time.time()  # Update the last alive time
             update_led_strip_status(led_strip_name, alive=alive)
             
         elif topic == CONTROL_TOPIC:
-            for sensor_id in range(1, 5):  # Assuming 4 sensors
-                if payload == "sleep":
-                    update_sensor_status(sensor_id, awake=False)
-                    logger.info(f"Set sensor_id={sensor_id} to sleep")
-                    client.publish(MOTION_CONTROL_TOPIC, "wake")
-                elif payload == "wake":
-                    update_sensor_status(sensor_id, awake=True)
-                    logger.info(f"Set sensor_id={sensor_id} to wake")
-                    client.publish(MOTION_CONTROL_TOPIC, "sleep")
+            sensors_on = payload.lower() == "wake"
+            logger.info(f"Setting all sensors to {'awake' if sensors_on else 'sleep'}")
+            update_sensor_status(sensors_on)
+            client.publish(MOTION_CONTROL_TOPIC, "wake" if sensors_on else "sleep")
                     
     except ValueError as e:
         logger.error(f"Failed to decode message payload: {e}")
@@ -165,17 +162,21 @@ def check_for_alive_messages():
         for sensor_id, last_time in last_activity.items():
             if current_time - last_time >= TIMEOUT_PERIOD:
                 logger.info(f"Sensor {sensor_id} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
-                update_sensor_status(sensor_id, active=False, awake=False)
+                update_sensor_status(False)
         for led_strip_name, last_time in led_strip_last_activity.items():
             if current_time - last_time >= TIMEOUT_PERIOD:
                 logger.info(f"LED strip {led_strip_name} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
                 update_led_strip_status(led_strip_name, alive=False)
         time.sleep(ALIVE_CHECK_PERIOD)
 
-            
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
+
+if __name__ == "__main__":
+    mqtt_client = setup_mqtt_client()
+    threading.Thread(target=check_for_alive_messages, daemon=True).start()
+    mqtt_client.loop_forever()
