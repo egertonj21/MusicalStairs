@@ -1,13 +1,16 @@
 import paho.mqtt.client as mqtt
 import logging
 import time
+import threading
+import websocket
 from sensor_data import fetch_and_play_note_details
 from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
-                    MOTION_CONTROL_TOPIC)
+                    MOTION_CONTROL_TOPIC, WS_SERVER_URL)
 from utils import retry_request
 
 # Configure logging
 logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # Mute state
 is_muted = False
@@ -49,14 +52,34 @@ def update_sensor_status(sensor_id, active=None, awake=None):
     except Exception as e:
         logger.error(f"Failed to send data to server: {e}")
 
-def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=None):
+def update_led_strip_status(led_strip_name, alive=None):
     payload = {
         "led_strip_name": led_strip_name,
-        "active": active,
-        "alive": alive,
-        "colour_id": colour_id
+        "alive": alive
     }
-    # Here we can send the payload to the WebSocket server if needed
+    try:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
+        ws_payload = {
+            "route": "updateLEDStripStatus",
+            "payload": payload
+        }
+        ws.send(json.dumps(ws_payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for updateLEDStripStatus: {response_data}")
+        if response_data.get("route") == "updateLEDStripStatus" and "error" not in response_data:
+            logger.info(f"LED strip status updated successfully for {led_strip_name}: {payload}")
+        else:
+            logger.error(f"Failed to update LED strip status for {led_strip_name}: {response_data.get('error')}")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
+    except Exception as e:
+        logger.error(f"Failed to send data to server: {e}")
+
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -103,7 +126,8 @@ def on_message(client, userdata, message):
             led_strip_name = topic.split("/")[-1]
             active = payload.lower() == "alive"
             logger.debug(f"Alive message for LED strip: led_strip_name={led_strip_name}, active={active}")
-            update_led_strip_status(led_strip_name, active=active, alive=active)
+            led_strip_last_activity[led_strip_name] = time.time()  # Update the last alive time
+            update_led_strip_status(led_strip_name, alive=alive)
             
         elif topic == CONTROL_TOPIC:
             for sensor_id in range(1, 5):  # Assuming 4 sensors
@@ -142,7 +166,12 @@ def check_for_alive_messages():
             if current_time - last_time >= TIMEOUT_PERIOD:
                 logger.info(f"Sensor {sensor_id} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
                 update_sensor_status(sensor_id, active=False, awake=False)
+        for led_strip_name, last_time in led_strip_last_activity.items():
+            if current_time - last_time >= TIMEOUT_PERIOD:
+                logger.info(f"LED strip {led_strip_name} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
+                update_led_strip_status(led_strip_name, alive=False)
         time.sleep(ALIVE_CHECK_PERIOD)
+
             
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
