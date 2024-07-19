@@ -18,14 +18,42 @@ is_muted = False
 NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
-TIMEOUT_PERIOD = 20  # 5 minutes
-ALIVE_CHECK_PERIOD = 60  # Period to check for alive messages (in seconds)
+TIMEOUT_PERIOD = 10  # 5 minutes
+ALIVE_CHECK_PERIOD = 5  # Period to check for alive messages (in seconds)
 
 # Dictionary to track the last activity time for each ultrasonic sensor
 last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
 
 # Dictionary to track the last activity time for each LED strip
 led_strip_last_activity = {f"ledstrip{i}": time.time() for i in range(1, 3)}  # Update based on actual LED strips
+
+def update_sensor_alive(sensors_on):
+    payload = {
+        "sensors_on": sensors_on
+    }
+    logger.debug(f"Updating sensor alive status with payload: {payload}")
+    try:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
+        ws_payload = {
+            "action": "updateSensorAlive",
+            "payload": payload
+        }
+        ws.send(json.dumps(ws_payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for updateSensorAlive: {response_data}")
+        if response_data.get("action") == "update_sensor_status" and "error" not in response_data:
+            logger.info(f"Sensor alive status updated successfully: {payload}")
+        else:
+            logger.error(f"Failed to update sensor alive status: {response_data.get('error')}")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
+    except Exception as e:
+        logger.error(f"Failed to send data to server: {e}")
 
 def update_sensor_status(sensors_on):
     payload = {
@@ -35,7 +63,7 @@ def update_sensor_status(sensors_on):
         ws = websocket.WebSocket()
         ws.connect(WS_SERVER_URL)
         ws_payload = {
-            "action": "updateSensorAlive",
+            "action": "updateSensorStatus",
             "payload": payload
         }
         ws.send(json.dumps(ws_payload))
@@ -160,12 +188,12 @@ def check_for_alive_messages():
     while True:
         current_time = time.time()
         for sensor_id, last_time in last_activity.items():
-            if current_time - last_time >= TIMEOUT_PERIOD:
-                logger.info(f"Sensor {sensor_id} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
-                update_sensor_status(False)
+            if current_time - last_time >= ALIVE_CHECK_PERIOD:
+                logger.info(f"Sensor {sensor_id} has not sent an alive message for {ALIVE_CHECK_PERIOD} seconds. Marking as inactive.")
+                update_sensor_alive(False)
         for led_strip_name, last_time in led_strip_last_activity.items():
             if current_time - last_time >= TIMEOUT_PERIOD:
-                logger.info(f"LED strip {led_strip_name} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
+                logger.info(f"LED strip {led_strip_name} has not sent an alive message for {ALIVE_CHECK_PERIOD} seconds. Marking as inactive.")
                 update_led_strip_status(led_strip_name, alive=False)
         time.sleep(ALIVE_CHECK_PERIOD)
 
