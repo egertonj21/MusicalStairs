@@ -14,7 +14,7 @@ ranges = []
 last_played = {}  # Dictionary to track last played note and timestamp for each sensor
 
 # Cooldown period in seconds
-COOLDOWN_PERIOD = 5
+COOLDOWN_PERIOD = 1
 is_muted = False  # Mute state
 
 # Configure logging

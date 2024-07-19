@@ -101,11 +101,18 @@ def on_message(client, userdata, message):
 
 def check_for_inactivity(client):
     current_time = time.time()
+    all_inactive = True  # Flag to check if all sensors are inactive
+
     for sensor_id, last_time in last_activity.items():
-        if current_time - last_time >= TIMEOUT_PERIOD:
-            logger.info(f"Sensor {sensor_id} has been inactive for {TIMEOUT_PERIOD} seconds. Sending sleep command.")
-            client.publish(CONTROL_TOPIC, "sleep")
-            client.publish(MOTION_CONTROL_TOPIC, "motion_wake")
+        if current_time - last_time < TIMEOUT_PERIOD:
+            all_inactive = False  # If any sensor is active, set flag to False
+            break  # No need to check further, as we found an active sensor
+
+    if all_inactive:
+        logger.info(f"All sensors have been inactive for {TIMEOUT_PERIOD} seconds. Sending sleep command.")
+        client.publish(CONTROL_TOPIC, "sleep")
+        client.publish(MOTION_CONTROL_TOPIC, "motion_wake")
+
             
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
