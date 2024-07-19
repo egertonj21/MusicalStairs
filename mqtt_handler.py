@@ -15,6 +15,7 @@ NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
 TIMEOUT_PERIOD = 300  # 5 minutes
+ALIVE_CHECK_PERIOD = 60  # Period to check for alive messages (in seconds)
 
 # Dictionary to track the last activity time for each ultrasonic sensor
 last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
@@ -25,7 +26,28 @@ def update_sensor_status(sensor_id, active=None, awake=None):
         "active": active,
         "awake": awake
     }
-    # Here we can send the payload to the WebSocket server if needed
+    try:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
+        ws_payload = {
+            "route": "updateSensorAlive",
+            "payload": payload
+        }
+        ws.send(json.dumps(ws_payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for updateSensorAlive: {response_data}")
+        if response_data.get("route") == "updateSensorAlive" and "error" not in response_data:
+            logger.info(f"Sensor status updated successfully for sensor {sensor_id}: {payload}")
+        else:
+            logger.error(f"Failed to update sensor status for sensor {sensor_id}: {response_data.get('error')}")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
+    except Exception as e:
+        logger.error(f"Failed to send data to server: {e}")
 
 def update_led_strip_status(led_strip_name, active=None, alive=None, colour_id=None):
     payload = {
@@ -113,6 +135,14 @@ def check_for_inactivity(client):
         client.publish(CONTROL_TOPIC, "sleep")
         client.publish(MOTION_CONTROL_TOPIC, "motion_wake")
 
+def check_for_alive_messages():
+    while True:
+        current_time = time.time()
+        for sensor_id, last_time in last_activity.items():
+            if current_time - last_time >= TIMEOUT_PERIOD:
+                logger.info(f"Sensor {sensor_id} has not sent an alive message for {TIMEOUT_PERIOD} seconds. Marking as inactive.")
+                update_sensor_status(sensor_id, active=False, awake=False)
+        time.sleep(ALIVE_CHECK_PERIOD)
             
 def setup_mqtt_client():
     client = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=mqtt.MQTTv311)
