@@ -18,7 +18,7 @@ is_muted = False
 NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
-TIMEOUT_PERIOD = 10  # 5 minutes
+TIMEOUT_PERIOD = 300  # 5 minutes
 ALIVE_CHECK_PERIOD = 5  # Period to check for alive messages (in seconds)
 
 # Dictionary to track the last activity time for each ultrasonic sensor
@@ -91,14 +91,14 @@ def update_led_strip_status(led_strip_name, alive=None):
         ws = websocket.WebSocket()
         ws.connect(WS_SERVER_URL)
         ws_payload = {
-            "action": "updateLEDStripStatus",
+            "action": "updateLedStripAlive",
             "payload": payload
         }
         ws.send(json.dumps(ws_payload))
         response = ws.recv()
         response_data = json.loads(response)
-        logger.debug(f"Received response for updateLEDStripStatus: {response_data}")
-        if response_data.get("action") == "updateLEDStripStatus" and "error" not in response_data:
+        logger.debug(f"Received response for updateLedStripAlive: {response_data}")
+        if response_data.get("action") == "updateLedStripAlive" and "error" not in response_data:
             logger.info(f"LED strip status updated successfully for {led_strip_name}: {payload}")
         else:
             logger.error(f"Failed to update LED strip status for {led_strip_name}: {response_data.get('error')}")
@@ -192,7 +192,7 @@ def check_for_alive_messages():
                 logger.info(f"Sensor {sensor_id} has not sent an alive message for {ALIVE_CHECK_PERIOD} seconds. Marking as inactive.")
                 update_sensor_alive(False)
         for led_strip_name, last_time in led_strip_last_activity.items():
-            if current_time - last_time >= TIMEOUT_PERIOD:
+            if current_time - last_time >= ALIVE_CHECK_PERIOD:
                 logger.info(f"LED strip {led_strip_name} has not sent an alive message for {ALIVE_CHECK_PERIOD} seconds. Marking as inactive.")
                 update_led_strip_status(led_strip_name, alive=False)
         time.sleep(ALIVE_CHECK_PERIOD)
@@ -204,7 +204,4 @@ def setup_mqtt_client():
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
 
-if __name__ == "__main__":
-    mqtt_client = setup_mqtt_client()
-    threading.Thread(target=check_for_alive_messages, daemon=True).start()
-    mqtt_client.loop_forever()
+

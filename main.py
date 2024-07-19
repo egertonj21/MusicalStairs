@@ -1,7 +1,8 @@
 import logging
 import os
 import time
-from mqtt_handler import setup_mqtt_client, check_for_inactivity
+import threading
+from mqtt_handler import setup_mqtt_client, check_for_inactivity, check_for_alive_messages
 from sound import load_sounds, load_ranges
 
 # Set the logging level based on an environment variable
@@ -21,6 +22,10 @@ def main():
     # Create and set up MQTT client
     logger.debug("Setting up MQTT client")
     client = setup_mqtt_client()
+    
+    # Start the thread to check for alive messages
+    logger.debug("Starting thread to check for alive messages")
+    threading.Thread(target=check_for_alive_messages, daemon=True).start()
 
     # Start the MQTT loop to handle incoming messages
     try:
