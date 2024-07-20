@@ -54,6 +54,44 @@ def determine_range_id(distance):
             return range_data['range_ID']
     logger.warning(f"No matching range found for distance: {distance}")
     return None
+    
+def send_led_trigger(sensor_id, range_id):
+    try:
+        ws = websocket.WebSocket()
+        ws.connect(WS_SERVER_URL)
+        payload = {
+            "action": "getLEDTriggerPayload",
+            "payload": {
+                "sensor_id": sensor_id,
+                "distance": range_id  # Correcting the payload to send distance
+            }
+        }
+        ws.send(json.dumps(payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        logger.debug(f"Received response for getLEDTriggerPayload: {response_data}")
+        if response_data.get("action") == "LEDTrigger" and "payload" in response_data:
+            led_payload = response_data["payload"]
+            logger.debug(f"LED Trigger Payload: {led_payload}")
+
+            # Now send the LED trigger payload
+            payload = {
+                "action": "sendLEDTrigger",
+                "payload": led_payload
+            }
+            ws.send(json.dumps(payload))
+            response = ws.recv()
+            response_data = json.loads(response)
+            logger.debug(f"Received response for sendLEDTrigger: {response_data}")
+        else:
+            logger.warning(f"Failed to get LED trigger payload for sensor {sensor_id} at range {range_id}.")
+        ws.close()
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
+    except Exception as e:
+        logger.error(f"Unexpected error in send_led_trigger: {e}")
 
 def send_security_led_trigger(sensor_id, color):
     try:
@@ -169,7 +207,7 @@ def fetch_and_play_note_details(sensor_id, distance, is_muted):
             log_sensor_data(sensor_id, distance)
 
             if current_mode == 1:  # Musical Stairs mode
-                send_led_trigger(sensor_id, range_id)
+                send_led_trigger(sensor_id, distance)
                 current_time = time.time()
                 last_note, last_time = last_played.get(sensor_id, (None, 0))
 
