@@ -7,7 +7,7 @@ import json
 from sensor_data import fetch_and_play_note_details
 from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
                     MOTION_CONTROL_TOPIC, WS_SERVER_URL)
-from utils import retry_request
+from utils import retry_request, get_current_mode
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -19,7 +19,7 @@ NUM_LEDS = 31
 
 # Timeout period for ultrasonic sensors to sleep (in seconds)
 TIMEOUT_PERIOD = 300  # 5 minutes
-ALIVE_CHECK_PERIOD = 5  # Period to check for alive messages (in seconds)
+ALIVE_CHECK_PERIOD = 60  # Period to check for alive messages (in seconds)
 
 # Dictionary to track the last activity time for each ultrasonic sensor
 last_activity = {sensor_id: time.time() for sensor_id in range(1, 5)}
@@ -203,5 +203,3 @@ def setup_mqtt_client():
     client.on_message = on_message
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
-
-
