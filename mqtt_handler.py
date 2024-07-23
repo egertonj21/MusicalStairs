@@ -11,7 +11,7 @@ from utils import retry_request, get_current_mode
 
 # Configure logging
 logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+
 
 # Mute state
 is_muted = False

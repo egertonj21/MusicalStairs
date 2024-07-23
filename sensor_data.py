@@ -30,6 +30,7 @@ def log_sensor_data(sensor_id, distance):
                 "distance": distance
             }
         }
+        logger.debug(f"Sending payload for logSensorData: {payload}")
         ws.send(json.dumps(payload))
         response = ws.recv()
         response_data = json.loads(response)

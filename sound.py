@@ -18,15 +18,18 @@ COOLDOWN_PERIOD = 1
 is_muted = False  # Mute state
 
 # Configure logging
-logging.basicConfig(level=logging.DEBUG)
+
 logger = logging.getLogger(__name__)
 
 def load_sounds(retries=5, delay=2):
     for attempt in range(retries):
+        logger.debug(f"Attempt {attempt + 1} to load sounds")
         try:
             ws = websocket.WebSocket()
+            logger.debug(f"Connecting to WebSocket server at {WS_SERVER_URL}")
             ws.connect(WS_SERVER_URL)
             payload = {"action": "getNotes"}
+            logger.debug(f"Sending payload: {payload}")
             ws.send(json.dumps(payload))
             response = ws.recv()
             logger.debug(f"Received raw response for getNotes: {response}")
@@ -53,10 +56,13 @@ def load_sounds(retries=5, delay=2):
 def load_ranges(retries=5, delay=2):
     global ranges
     for attempt in range(retries):
+        logger.debug(f"Attempt {attempt + 1} to load ranges")
         try:
             ws = websocket.WebSocket()
+            logger.debug(f"Connecting to WebSocket server at {WS_SERVER_URL}")
             ws.connect(WS_SERVER_URL)
             payload = {"action": "getRanges"}
+            logger.debug(f"Sending payload: {payload}")
             ws.send(json.dumps(payload))
             response = ws.recv()
             logger.debug(f"Received raw response for getRanges: {response}")

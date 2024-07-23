@@ -6,7 +6,7 @@ from mqtt_handler import setup_mqtt_client, check_for_inactivity, check_for_aliv
 from sound import load_sounds, load_ranges
 
 # Set the logging level based on an environment variable
-log_level = os.getenv('LOG_LEVEL', 'INFO').upper()
+log_level = os.getenv('LOG_LEVEL', 'DEBUG').upper()
 logging.basicConfig(level=getattr(logging, log_level))
 logger = logging.getLogger(__name__)
 
