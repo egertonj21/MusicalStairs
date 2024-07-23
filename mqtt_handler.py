@@ -6,7 +6,7 @@ import websocket
 import json
 from sensor_data import fetch_and_play_note_details
 from config import (MQTT_BROKER, MQTT_PORT, MQTT_TOPICS, MQTT_MUTE_TOPIC, CONTROL_TOPIC, 
-                    MOTION_CONTROL_TOPIC, WS_SERVER_URL)
+                    MOTION_CONTROL_TOPIC, CONFIG_RANGE_TOPIC, CONFIG_TOPICS, WS_SERVER_URL)
 from utils import retry_request
 
 # Configure logging
@@ -85,23 +85,28 @@ def update_sensor_status(sensors_on):
 def update_led_strip_status(led_strip_name, alive=None):
     payload = {
         "led_strip_name": led_strip_name,
-        "alive": alive
+        "alive": alive,
+        "active": alive
     }
     try:
         ws = websocket.WebSocket()
         ws.connect(WS_SERVER_URL)
         ws_payload = {
-            "action": "updateLedStripAlive",
+            "action": "updateLedStripStatus",
             "payload": payload
         }
         ws.send(json.dumps(ws_payload))
         response = ws.recv()
         response_data = json.loads(response)
-        logger.debug(f"Received response for updateLedStripAlive: {response_data}")
-        if response_data.get("action") == "updateLedStripAlive" and "error" not in response_data:
+        logger.debug(f"Received response for updateLedStripStatus: {response_data}")
+        if response_data.get("action") == "updateLedStripStatus" and "error" not in response_data:
             logger.info(f"LED strip status updated successfully for {led_strip_name}: {payload}")
+            # If the LED strip is alive, send configuration messages
+            if alive:
+                send_config_messages(ws, led_strip_name, mqtt_client)
         else:
-            logger.error(f"Failed to update LED strip status for {led_strip_name}: {response_data.get('error')}")
+            error_msg = response_data.get('error', 'Unknown error')
+            logger.error(f"Failed to update LED strip status for {led_strip_name}: {error_msg}")
         ws.close()
     except websocket.WebSocketException as e:
         logger.error(f"WebSocket error: {e}")
@@ -109,6 +114,63 @@ def update_led_strip_status(led_strip_name, alive=None):
         logger.error(f"JSON decode error: {e} - Response content: {response}")
     except Exception as e:
         logger.error(f"Failed to send data to server: {e}")
+
+def send_config_messages(ws, led_strip_name, mqtt_client):
+    try:
+        # Request range limits
+        ws_payload = {
+            "action": "getRangeLimits"
+        }
+        ws.send(json.dumps(ws_payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        if response_data.get("action") == "getRangeLimits" and "error" not in response_data:
+            closeUpperLimit = response_data["data"]["closeUpperLimit"]
+            midUpperLimit = response_data["data"]["midUpperLimit"]
+            logger.info(f"Received range limits: close={closeUpperLimit}, mid={midUpperLimit}")
+            # Send range configuration MQTT message
+            range_message = f"{closeUpperLimit},{midUpperLimit}"
+            mqtt_client.publish(CONFIG_RANGE_TOPIC, range_message)
+        else:
+            logger.error(f"Failed to fetch range limits: {response_data.get('error')}")
+
+        # Request LED color configuration
+        ws_payload = {
+            "action": "determineLEDColor",
+            "payload": {
+                "sensorName": led_strip_name
+            }
+        }
+        ws.send(json.dumps(ws_payload))
+        response = ws.recv()
+        response_data = json.loads(response)
+        if response_data.get("action") == "determineLEDColor" and "error" not in response_data:
+            colors = response_data["data"]
+            for color in colors:
+                red = color["red"]
+                green = color["green"]
+                blue = color["blue"]
+                range_ID = color["range_ID"]
+                range_name = ""
+                if range_ID == 1:
+                    range_name = "close"
+                elif range_ID == 2:
+                    range_name = "mid"
+                elif range_ID == 3:
+                    range_name = "far"
+                logger.info(f"Received LED color configuration: range_name={range_name}, red={red}, green={green}, blue={blue}")
+                # Send LED color configuration MQTT message
+                led_strip_index = int(led_strip_name[-1]) - 1  # Assumes led_strip_name ends with a number
+                color_message = f"{range_name}&{red},{green},{blue}"
+                mqtt_client.publish(CONFIG_TOPICS[led_strip_index], color_message)
+        else:
+            logger.error(f"Failed to fetch LED color configuration: {response_data.get('error')}")
+    except websocket.WebSocketException as e:
+        logger.error(f"WebSocket error: {e}")
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON decode error: {e} - Response content: {response}")
+    except Exception as e:
+        logger.error(f"Failed to send config messages: {e}")
 
 def on_connect(client, userdata, flags, rc):
     if rc == 0:
@@ -204,4 +266,19 @@ def setup_mqtt_client():
     client.connect(MQTT_BROKER, MQTT_PORT)
     return client
 
+# Initialize and start the MQTT client
+mqtt_client = setup_mqtt_client()
 
+# Start a background thread to check for inactivity
+inactivity_thread = threading.Thread(target=check_for_inactivity, args=(mqtt_client,))
+inactivity_thread.daemon = True
+inactivity_thread.start()
+
+# Start a background thread to check for alive messages
+alive_thread = threading.Thread(target=check_for_alive_messages)
+alive_thread.daemon = True
+alive_thread.start()
+
+# Start the MQTT client loop
+mqtt_client.loop_forever()
+    
